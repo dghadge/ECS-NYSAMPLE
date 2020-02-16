@@ -1,0 +1,116 @@
+Description: Drupal CloudFront Web Distribution
+
+Parameters:
+  OriginAccessProtocol:
+    Description: Protocol to be used by CloudFront to connect to ALB
+    Type: String
+    AllowedValues:
+      - http-only
+      - https-only
+      - match-viewer
+    Default: https-only
+    ConstraintDescription: Choose http-only or https-only or match-viewer
+
+  CloudFrontAlias:
+    Description: Alias for the CloudFront distribution.
+    Type: List<String>
+    Default: nysample.org
+    AllowedPattern: (?!-)[a-zA-Z0-9-.]*(?<!-)
+    ConstraintDescription: Must be a valid fully-qualified domain name.
+
+  CustomSSLCertificateId:
+    Description: The ARN of the SSL certificate in Certificate Manager
+    Default: arn:aws:acm:us-east-1:491147561046:certificate/8cd97c9d-bc35-4b30-9747-612ddde0e64c
+    Type: String
+
+  CloudFrontPriceClass:
+    Description:
+      Select the price class associated with the maximum price that you
+      want to pay for CloudFront service. If you select a price class other than All,
+      some of your users may experience higher latency.
+    AllowedValues:
+      - use-all-edge-locations
+      - use-only-us-canada-europe-asia
+      - use-only-us-canada-europe
+    Default: use-only-us-canada-europe
+    Type: String
+    ConstraintDescription: Select a valid CloudFront Price Class.
+
+  pMasterStackName:
+    Description: If nested, name of master stack
+    Type: String
+
+Mappings:
+  CloudFrontPriceClassMap:
+    use-all-edge-locations:
+      PriceCode: PriceClass_All
+    use-only-us-canada-europe-asia:
+      PriceCode: PriceClass_200
+    use-only-us-canada-europe:
+      PriceCode: PriceClass_100
+
+Conditions:
+  DistributionHasAliases: !Not
+    - !Equals
+      - !Select
+        - 0
+        - !Ref 'CloudFrontAlias'
+      - cdn.default
+  DistributionHasSSL: !Not
+    - !Equals
+      - !Ref 'CustomSSLCertificateId'
+      - ''
+
+Resources:
+  DrupalCloudfrontDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Aliases: !If
+          - DistributionHasAliases
+          - !Ref 'CloudFrontAlias'
+          - !Ref 'AWS::NoValue'
+        ViewerCertificate:
+          AcmCertificateArn: !If
+            - DistributionHasSSL
+            - !Ref 'CustomSSLCertificateId'
+            - !Ref 'AWS::NoValue'
+          CloudFrontDefaultCertificate: !If
+            - DistributionHasSSL
+            - !Ref 'AWS::NoValue'
+            - true
+          SslSupportMethod: !If
+            - DistributionHasSSL
+            - sni-only
+            - !Ref 'AWS::NoValue'
+        Comment: !Ref 'AWS::StackName'
+        DefaultCacheBehavior:
+          AllowedMethods:
+            - HEAD
+            - GET
+          MinTTL: 0
+          MaxTTL: 31536000
+          DefaultTTL: 86400
+          ForwardedValues:
+            QueryString: false
+          TargetOriginId: s3bucket
+          ViewerProtocolPolicy: allow-all
+          Compress: false
+        Enabled: true
+        Origins:
+          - Id: s3bucket
+            DomainName:
+              !Join ['-', [!Ref 'pMasterStackName', 's3.amazonaws.com']]
+            CustomOriginConfig:
+              OriginProtocolPolicy: !Ref 'OriginAccessProtocol'
+        PriceClass: !FindInMap
+          - CloudFrontPriceClassMap
+          - !Ref 'CloudFrontPriceClass'
+          - PriceCode
+      Tags:
+        - Key: Name
+          Value: Drupal-Cloudfront-Distribution
+Outputs:
+  CDNUrl:
+    Description: The URL of CloudFront Distribution
+    Value: !GetAtt 'DrupalCloudfrontDistribution.DomainName'

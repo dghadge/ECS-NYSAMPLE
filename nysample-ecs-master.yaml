@@ -1,0 +1,142 @@
+Description: "\nTemplate to create nysample Drupal container ecosystem. Creates the following\
+  \ in that order - 1. S3 creates a unique S3 bucket to store ECS artifacts 2. RDS\
+  \ (mysql) database with secrets stored in AWS SecretsManager and secrets ratation\
+  \ enabled. 3. Elasticache Redis cluster 4. ECS Cluster with Drupal Service deployed\
+  \ on the cluster. LoadBalancer is HTTPS enabled.\n"
+Parameters:
+  ServiceName:
+    Type: String
+    Description: 'ECS Service/Task Definition Name (example: nysampleorg-webapp-qa)'
+    Default: 'dg-nysampleorg'
+  ECRImage:
+    Type: String
+    Description: 'ECR Image (example: 491147561046.dkr.ecr.us-east-1.amazonaws.com/nysampledrupal8:qa-latest)'
+    Default: '491147561046.dkr.ecr.us-east-1.amazonaws.com/nysampledrupal8:qa-latest'
+  DBNAME:
+    Type: String
+    Description: 'Database Name (example: nysampleorgdrupalqa)'
+    Default: 'dgdbnysampleorg'
+  DBInstanceClass:
+    Type: String
+    Description: 'Database Instance Class (example: db.t2.micro)'
+    Default: 'db.t2.small'
+  CFCNAME:
+    Type: String
+    Description: 'CloudFront CNAME (example: qa-cdn-d8.nysample.org)'
+    Default: 'dgnysampleorg99-cdn-d8.nysample.org'
+  KeyName:
+    Type: String
+    Description: 'CloudFront CNAME (example: dgdvteam, nysamplesa)'
+    Default: 'dgdvteam'
+  Project:
+    Type: String
+    Description: Project Name Tag
+    Default: dgnysampleorg-ecs
+  Environment:
+    Type: String
+    Description: Environment Name Tag
+    Default: qa
+  CreateS3Bucket:
+    Description: Create a new S3 bucket ?
+    Type: String
+    Default: 'true'
+    AllowedValues:
+      - 'true'
+      - 'false'
+Conditions:
+  CreateBucket: !Equals
+    - !Ref 'CreateS3Bucket'
+    - 'true'
+Resources:
+  S3:
+    Condition: CreateBucket
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: https://s3.amazonaws.com/cf-templates-18w5m3f93d04p-us-east-1/cloudformation/danghad/nysample-s3.yaml
+      Parameters:
+        S3BucketName: !Ref 'AWS::StackName'
+      Tags:
+        - Key: Project
+          Value: !Ref 'Project'
+        - Key: Environment
+          Value: !Ref 'Environment'
+  RDS:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: https://s3.amazonaws.com/cf-templates-18w5m3f93d04p-us-east-1/cloudformation/danghad/nysample-rds.yaml
+      Parameters:
+        pRotationLambdaARN: arn:aws:lambda:us-east-1:491147561046:function:SecretsManagerrds-secrets-rotation
+        pDBInstanceClass: !Ref 'DBInstanceClass'
+        pDBName: !Ref 'DBNAME'
+        pDBUserName: drupaluser
+        pVpcId: vpc-d7601abc
+        PrivateSubnets: subnet-5fa6dc34,subnet-7ca6dc17
+        MultiAvailabilityZone: 'false'
+        pEncryptAtRest: 'false'
+        AlertSnsTopicArn: arn:aws:sns:us-east-1:491147561046:ecs-qa-test
+        pMasterStackName: !Ref 'AWS::StackName'
+      Tags:
+        - Key: Project
+          Value: !Ref 'Project'
+        - Key: Environment
+          Value: !Ref 'Environment'
+  ElasticacheRedis:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: https://s3.amazonaws.com/cf-templates-18w5m3f93d04p-us-east-1/cloudformation/danghad/nysample-elasticache-redis.yaml
+      Parameters:
+        RedisPort: '6379'
+        VpcId: vpc-d7601abc
+        PrivateSubnets: subnet-5fa6dc34,subnet-7ca6dc17
+        pMasterStackName: !Ref 'AWS::StackName'
+      Tags:
+        - Key: Project
+          Value: !Ref 'Project'
+        - Key: Environment
+          Value: !Ref 'Environment'
+  ECS:
+    Type: AWS::CloudFormation::Stack
+    DependsOn:
+      - RDS
+      - ElasticacheRedis
+    Properties:
+      TemplateURL: https://s3.amazonaws.com/cf-templates-18w5m3f93d04p-us-east-1/cloudformation/danghad/nysample-ecs.yaml
+      Parameters:
+        KeyName: !Ref 'KeyName'
+        VpcId: vpc-d7601abc
+        ServiceName: !Ref 'ServiceName'
+        ClusterName: !Ref 'AWS::StackName'
+        PrivateSubnets: subnet-5fa6dc34,subnet-7ca6dc17
+        PublicSubnets: subnet-7b611b10,subnet-5e611b35
+        ECRImage: !Ref 'ECRImage'
+        LoadBalancerCertificateArn: arn:aws:acm:us-east-1:491147561046:certificate/8cd97c9d-bc35-4b30-9747-612ddde0e64c
+        AlertSnsTopicArn: arn:aws:sns:us-east-1:491147561046:ecs-qa-test
+        pMasterStackName: !Ref 'AWS::StackName'
+      Tags:
+        - Key: Project
+          Value: !Ref 'Project'
+        - Key: Environment
+          Value: !Ref 'Environment'
+  CloudFront:
+    Type: AWS::CloudFormation::Stack
+    DependsOn:
+      - ECS
+    Properties:
+      TemplateURL: https://s3.amazonaws.com/cf-templates-18w5m3f93d04p-us-east-1/cloudformation/danghad/nysample-cloudfront.yaml
+      Parameters:
+        CloudFrontAlias: !Ref 'CFCNAME'
+        CustomSSLCertificateId: arn:aws:acm:us-east-1:491147561046:certificate/8cd97c9d-bc35-4b30-9747-612ddde0e64c
+        CloudFrontPriceClass: use-all-edge-locations
+        pMasterStackName: !Ref 'AWS::StackName'
+      Tags:
+        - Key: Project
+          Value: !Ref 'Project'
+        - Key: Environment
+          Value: !Ref 'Environment'
+Outputs:
+  LoadBalancerUrl:
+    Description: The URL endpoint for the ALB
+    Value: !Join
+      - ''
+      - - !GetAtt 'ECS.Outputs.ECSALB'
+        - /

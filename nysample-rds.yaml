@@ -1,0 +1,274 @@
+Description: Template to RDS with username/password in SecretsManager
+
+Parameters:
+  pRotationLambdaARN:
+    Description: ARN of your rotation Lambda function.
+    Type: String
+    Default: arn:aws:lambda:us-east-2:420279361566:function:SecretsManagerrds-secrets-rotation
+
+  pDBInstanceClass:
+    Description: RDS instance size/class
+    Type: String
+    Default: db.t2.micro
+
+  pDBName:
+    Description: RDS DB Name/Instance Identifier
+    Type: String
+    Default: ECSRDSDB
+
+  pDBUserName:
+    Description: RDS DB Username
+    Type: String
+    Default: admin
+
+  pVpcId:
+    Description: Allow instances within VPC to access RDS.
+    Type: AWS::EC2::VPC::Id
+    Default: vpc-e897a480
+
+  PrivateSubnets:
+    Description: Name of Private Subnets where db instances will reside
+    Type: List<AWS::EC2::Subnet::Id>
+    Default: subnet-98045ef0,subnet-9e9101e4
+
+  BackupRetentionPeriod:
+    Description: Enter Backup Retention Period in Days.
+    Type: Number
+    Default: "7"
+
+  MultiAvailabilityZone:
+    Description: Enable Multi Availability Zones?
+    Type: String
+    Default: "true"
+    AllowedValues:
+      - "true"
+      - "false"
+
+  pMasterStackName:
+    Description: If nested, name of master stack
+    Type: String
+
+  pEncryptAtRest:
+    Description: Encrypt data at rest
+    Type: String
+    Default: "true"
+    AllowedValues:
+      - "true"
+      - "false"
+
+  PreferredBackupWindow:
+    Description: The time range (in UTC) when RDS takes a snapshot.
+    Type: String
+    Default: "05:00-09:00"
+    AllowedPattern: \d{2}:\d{2}-\d{2}:\d{2}
+    ConstraintDescription: must be a valid timestamp range, for example 05:00-09:00
+
+  PreferredMaintenanceWindow:
+    Description:
+      "The weekly time range during which system maintenance can occur.
+      Use the following format to specify a time range: ddd:hh24:mi-ddd:hh24:mi (24H
+      Clock UTC)."
+    Type: String
+    Default: sun:22:00-sun:23:30
+    AllowedPattern: (mon|tue|wed|thu|fri|sat|sun):\d{2}:\d{2}-(mon|tue|wed|thu|fri|sat|sun):\d{2}:\d{2}
+    ConstraintDescription: must be a valid timestamp range with day of week, for example
+
+  LicenseModel:
+    Description: License Model.
+    Type: String
+    Default: general-public-license
+
+  AllocatedStorage:
+    Description: The size of the database (Gb)
+    Default: "5"
+    Type: Number
+    MinValue: "5"
+    MaxValue: "6144"
+    ConstraintDescription: Must be between 5-6144
+
+  AutoMinorVersionUpgrade:
+    Description: Allow Automatic Minor Version Upgrades?
+    Type: String
+    Default: "true"
+    AllowedValues:
+      - "true"
+      - "false"
+
+  SetupAlarms:
+    Description: Setup Cloudwatch Alarms?
+    Type: String
+    Default: "true"
+    AllowedValues:
+      - "true"
+      - "false"
+  AlertSnsTopicArn:
+    Description: SNS Topic ARN for RDS notifications.
+    Type: String
+    Default: arn:aws:sns:us-east-2:420279361566:danghad
+
+Conditions:
+  ConfigureAlarms: !Equals
+    - !Ref "SetupAlarms"
+    - "true"
+
+Resources:
+  RDSInstanceRotationSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Description: Username/Password for the RDS instance
+      GenerateSecretString:
+        SecretStringTemplate: !Join
+          - ""
+          - - '{"username":"'
+            - !Ref "pDBUserName"
+            - '"}'
+        GenerateStringKey: password
+        PasswordLength: 16
+        ExcludeCharacters: '"@/\'
+
+  DbSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: DBSubnet Group for RDS
+      SubnetIds:
+        - !Select
+          - 0
+          - !Ref "PrivateSubnets"
+        - !Select
+          - 1
+          - !Ref "PrivateSubnets"
+      Tags:
+        - Key: Name
+          Value: RDSDBSubnetGroup
+
+  RDSAccessSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Instance to RDS Access
+      VpcId: !Ref "pVpcId"
+      Tags:
+        - Key: Name
+          Value: RDSAccessSecurityGroup
+
+  AccessSecurityGroupIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    DependsOn: RDSAccessSecurityGroup
+    Properties:
+      GroupId: !Ref "RDSAccessSecurityGroup"
+      IpProtocol: tcp
+      FromPort: 3306
+      ToPort: 3306
+      SourceSecurityGroupId: !Ref "RDSAccessSecurityGroup"
+
+  AccessSecurityGroupVPCIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    DependsOn: RDSAccessSecurityGroup
+    Properties:
+      GroupId: !Ref "RDSAccessSecurityGroup"
+      IpProtocol: tcp
+      FromPort: 3306
+      ToPort: 3306
+      CidrIp: 10.0.0.0/8
+      Description: Allow connection from on-prem CIDR
+
+  DBInstance:
+    Type: AWS::RDS::DBInstance
+    DeletionPolicy: Snapshot
+    DependsOn:
+      - DbSubnetGroup
+      - RDSAccessSecurityGroup
+
+    Properties:
+      DBInstanceIdentifier: !Ref "pDBName"
+      DBInstanceClass: !Ref "pDBInstanceClass"
+      Engine: mysql
+      EngineVersion: 8.0.16
+      PubliclyAccessible: "false"
+      StorageEncrypted: !Ref "pEncryptAtRest"
+      StorageType: gp2
+      AllocatedStorage: !Ref "AllocatedStorage"
+      AllowMajorVersionUpgrade: "true"
+      AutoMinorVersionUpgrade: !Ref "AutoMinorVersionUpgrade"
+      BackupRetentionPeriod: !Ref "BackupRetentionPeriod"
+      LicenseModel: !Ref "LicenseModel"
+      MultiAZ: !Ref "MultiAvailabilityZone"
+      PreferredBackupWindow: !Ref "PreferredBackupWindow"
+      PreferredMaintenanceWindow: !Ref "PreferredMaintenanceWindow"
+      MasterUsername: !Join
+        - ""
+        - - "{{resolve:secretsmanager:"
+          - !Ref "RDSInstanceRotationSecret"
+          - :SecretString:username}}
+      MasterUserPassword: !Join
+        - ""
+        - - "{{resolve:secretsmanager:"
+          - !Ref "RDSInstanceRotationSecret"
+          - :SecretString:password}}
+      VPCSecurityGroups:
+        - !Ref "RDSAccessSecurityGroup"
+      DBSubnetGroupName: !Ref "DbSubnetGroup"
+
+  SecretRDSInstanceAttachment:
+    Type: AWS::SecretsManager::SecretTargetAttachment
+    Properties:
+      SecretId: !Ref "RDSInstanceRotationSecret"
+      TargetId: !Ref "DBInstance"
+      TargetType: AWS::RDS::DBInstance
+
+  AlarmCpu:
+    Condition: ConfigureAlarms
+    Type: AWS::CloudWatch::Alarm
+    DependsOn: DBInstance
+    Properties:
+      AlarmActions:
+        - !Ref "AlertSnsTopicArn"
+      AlarmDescription: CPU Utilization on RDS Instance is too high
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Dimensions:
+        - Name: DBInstanceIdentifier
+          Value: !Ref "DBInstance"
+      EvaluationPeriods: "1"
+      MetricName: CPUUtilization
+      Namespace: AWS/RDS
+      Period: "300"
+      Statistic: Average
+      Threshold: "70"
+
+  AlarmFreeSpace:
+    Condition: ConfigureAlarms
+    Type: AWS::CloudWatch::Alarm
+    DependsOn:
+      - DBInstance
+    Properties:
+      AlarmActions:
+        - !Ref "AlertSnsTopicArn"
+      AlarmDescription: 1Gb left of storage available on RDS Instance
+      ComparisonOperator: LessThanOrEqualToThreshold
+      Dimensions:
+        - Name: DBInstanceIdentifier
+          Value: !Ref "DBInstance"
+      EvaluationPeriods: "1"
+      MetricName: FreeStorageSpace
+      Namespace: AWS/RDS
+      Period: "300"
+      Statistic: Maximum
+      Threshold: "1024000000"
+
+Outputs:
+  RDSDatabaseSecrets:
+    Description: Database secrets stored in AWS Secrets Manager
+    Value: !Ref "RDSInstanceRotationSecret"
+    Export:
+      Name: !Join ["-", [oRDSDatabaseSecrets, !Ref "pMasterStackName"]]
+
+  RDSDatabaseName:
+    Description: Database name
+    Value: !Ref "pDBName"
+    Export:
+      Name: !Join ["-", [oRDSDatabaseName, !Ref "pMasterStackName"]]
+
+  RDSAccessSecurityGroup:
+    Description: Database access security group name
+    Value: !Ref "RDSAccessSecurityGroup"
+    Export:
+      Name: !Join ["-", [oRDSAccessSecurityGroup, !Ref "pMasterStackName"]]

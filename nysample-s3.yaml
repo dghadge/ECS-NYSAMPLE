@@ -1,0 +1,29 @@
+Description: "Template to create S3 bucket to host nysample ECS artifacts.\n"
+Parameters:
+  S3BucketName:
+    Description: 'Unique S3 Bucket Name (example: nysampleorg-qa)'
+    Type: String
+Resources:
+  S3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref 'S3BucketName'
+    DeletionPolicy: Retain
+  BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      PolicyDocument:
+        Id: PolicynysampleDevS3Drupal8-CF
+        Version: '2012-10-17'
+        Statement:
+          - Sid: StmtnysampleDevS3Drupal8-CF
+            Effect: Allow
+            Principal:
+              AWS: arn:aws:iam::491147561046:user/nysampledrupal8
+            Action:
+              - '*'
+            Resource: !Join
+              - ''
+              - - 'arn:aws:s3:::'
+                - !Ref 'S3BucketName'
+      Bucket: !Ref 'S3Bucket'
